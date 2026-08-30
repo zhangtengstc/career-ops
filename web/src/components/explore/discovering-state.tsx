@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { ApplyBackdrop } from "@/components/apply/apply-backdrop";
 import { instrumentSerif } from "@/lib/fonts";
-import { ATS_LABEL, ATS_SOURCES, type AtsSource } from "@/lib/explore";
+import { SOURCE_LABEL, ATS_SOURCES, LOGIN_SOURCES } from "@/lib/explore";
 import { useExplore, type SourceState } from "./explore-provider";
 
 const STYLE = `
@@ -45,7 +45,7 @@ export function useCountUp(target: number): number {
   return Math.round(val);
 }
 
-function SourceChip({ ats, s }: { ats: AtsSource; s?: SourceState }) {
+export function SourceChip({ ats, s }: { ats: string; s?: SourceState }) {
   const state = s?.state ?? "queued";
   const pct = s?.total ? Math.min(100, Math.round(((s.done ?? 0) / s.total) * 100)) : state === "swept" || state === "noisy" ? 100 : 0;
   return (
@@ -57,7 +57,7 @@ function SourceChip({ ats, s }: { ats: AtsSource; s?: SourceState }) {
       ) : (
         <span className="size-2.5 rounded-full border border-current opacity-40" />
       )}
-      <span className="text-[13px] font-medium text-foreground">{ATS_LABEL[ats]}</span>
+      <span className="text-[13px] font-medium text-foreground">{SOURCE_LABEL[ats] ?? ats}</span>
       <div className="ml-auto flex flex-col items-end gap-1">
         {state === "noisy" && <span className="text-[10px] text-faint">~{s?.unreachable} skipped</span>}
         <div className="co-src__track">
@@ -95,6 +95,9 @@ export function DiscoveringState() {
           {ATS_SOURCES.map((a) => (
             <SourceChip key={a} ats={a} s={sources[a]} />
           ))}
+          {LOGIN_SOURCES.filter((ls) => sources[ls] !== undefined).map((ls) => (
+            <SourceChip key={ls} ats={ls} s={sources[ls]} />
+          ))}
         </div>
 
         <p className="flex items-center gap-2 text-[13px] text-faint">
@@ -111,5 +114,32 @@ export function DiscoveringState() {
         )}
       </div>
     </>
+  );
+}
+
+/** Compact "still scanning" banner shown above the growing results list once the
+ *  first offer has streamed in — replaces the full-screen DiscoveringState so the
+ *  user watches results accumulate instead of a skeleton. */
+export function StreamingHeader() {
+  const { sources, matchCount, status } = useExplore();
+  const shown = useCountUp(matchCount);
+  return (
+    <div className="mb-6 rounded-xl border border-border bg-surface/30 p-4">
+      <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <Loader2 className="size-3.5 animate-spin" />
+        {status || "Scanning…"}
+      </p>
+      <p className={`mt-1 ${instrumentSerif.className} text-2xl text-foreground`}>
+        {shown} fresh roles and counting…
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {ATS_SOURCES.map((a) => (
+          <SourceChip key={a} ats={a} s={sources[a]} />
+        ))}
+        {LOGIN_SOURCES.filter((ls) => sources[ls] !== undefined).map((ls) => (
+          <SourceChip key={ls} ats={ls} s={sources[ls]} />
+        ))}
+      </div>
+    </div>
   );
 }

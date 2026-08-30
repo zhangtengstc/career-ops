@@ -9,7 +9,7 @@ import type { Application, InboxJob } from "@/lib/career-ops";
 import { normalizeTextKey } from "@/lib/core/normalize-text-key.mjs";
 import { paramsToFilters, paramsToAi, type ExploreFilters } from "@/lib/explore";
 import { FilterBuilder } from "./filter-builder";
-import { DiscoveringState } from "./discovering-state";
+import { DiscoveringState, StreamingHeader } from "./discovering-state";
 import { AiHuntView } from "./ai-hunt-view";
 import { ExploreModeToggle } from "./explore-mode-toggle";
 import { AiSearchBox } from "./ai-search-box";
@@ -26,6 +26,7 @@ const CLI_NAMES: Record<string, string> = {
   copilot: "Copilot CLI",
   qwen: "Qwen CLI",
   antigravity: "Antigravity CLI",
+  hermes: "Hermes Agent",
 };
 
 export function ExplorerView({
@@ -106,9 +107,22 @@ export function ExplorerView({
   );
 
   const isAi = mode === "ai";
-  if (running) return isAi ? <AiHuntView cliName={cli.name} /> : <DiscoveringState />;
+  if (running) {
+    if (isAi) return <AiHuntView cliName={cli.name} />;
+    // Before the first offer streams in, show the full-screen discovery animation.
+    // Once results start arriving, switch to a compact progress banner + the
+    // GROWING results list, so the user watches roles accumulate in real time
+    // instead of staring at a counter for ~15 min.
+    if (offers.length === 0) return <DiscoveringState />;
+    return (
+      <div className="mx-auto max-w-5xl px-5 py-8 md:px-8">
+        <StreamingHeader />
+        <ResultsList offers={enriched} />
+      </div>
+    );
+  }
 
-  const canDiscover = filters.ats.length > 0;
+  const canDiscover = filters.ats.length > 0 || filters.loginSources.length > 0;
   const isResults = phase === "results";
 
   return (

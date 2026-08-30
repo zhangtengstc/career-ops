@@ -17,6 +17,14 @@ function block(key, items) {
     : "";
 }
 
+/** One YAML key→scalar map block, or "" when empty (e.g. `search_params`). */
+function mapEntries(items) {
+  return Object.entries(items || {})
+    .filter(([, v]) => v != null && v !== "")
+    .map(([k, v]) => `    ${k}: ${JSON.stringify(String(v))}`)
+    .join("\n");
+}
+
 /**
  * Serialize filters into a minimal, valid portals.yml.
  *
@@ -41,6 +49,12 @@ export function serializePortals(f) {
     out += block("always_allow", f.alwaysAllow);
     out += block("allow", f.allow);
     out += block("block", f.block);
+  }
+  // Semantic search conditions (LLM intent → source codes). Carried verbatim for
+  // the login-state source to map (e.g. zhaopin reads `search_params.education`).
+  if (f.searchParams && Object.keys(f.searchParams).length) {
+    const body = mapEntries(f.searchParams);
+    if (body) out += `search_params:\n${body}\n`;
   }
   return out;
 }

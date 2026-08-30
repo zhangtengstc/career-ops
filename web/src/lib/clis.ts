@@ -69,6 +69,15 @@ export const KNOWN: CliSpec[] = [
   // latter. Plain `-p` streams text, which is what every other non-Claude entry
   // here does.
   { id: "grok", name: "Grok Build CLI", bin: "grok", run: "grok -p", url: "https://docs.x.ai/build/overview", args: (p) => ["-p", p] },
+  // Hermes Agent's headless one-shot mode (`-z`): prints only the final response
+  // text to stdout, no banner/spinner — the same "one command + one prompt →
+  // stdout" contract every other runtime here speaks. `-p carreer-ops` pins the
+  // dedicated profile so web-triggered runs use the same isolated config/skills/
+  // memory the user already set up for this checkout, and never the sticky
+  // default profile (or a session's HERMES_HOME). No auto-approve flag is
+  // passed — Hermes keeps its approval prompt, and KNOWN may never carry one
+  // (see the header note + tests/lib/clis-permissions.test.mjs).
+  { id: "hermes", name: "Hermes Agent", bin: "hermes", run: "hermes -p carreer-ops -z", url: "https://hermes-agent.nousresearch.com", args: (p) => ["-p", "carreer-ops", "-z", p] },
 ];
 
 function searchDirs(): string[] {

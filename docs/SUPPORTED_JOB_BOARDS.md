@@ -89,6 +89,29 @@ are shared helpers and are not loaded as providers.
 | Working Nomads | API | Reads the board-wide `https://www.workingnomads.com/api/exposed_jobs/` JSON feed, then applies scanner filters. |
 | Yourator | API | **operator: 友睿資訊股份有限公司 (Yourator)** — declared per [Source Indexing Policy](../CONTRIBUTING.md#source-indexing-policy) rule 4; the submitting contributor is not affiliated with the board (provenance: the operating entity is named on the site's own [privacy page](https://www.yourator.co/privacy)). Taiwanese job board for startup and digital roles (1,760 listings across 151 employers when sampled on 2026-08-18). Reads the board-wide zero-auth `https://www.yourator.co/api/v4/jobs?page=N` JSON feed (20/page; no key, cookie or `Referer` required). Select with `provider: yourator`. The API exposes no free-text search parameter — `q`/`keyword`/`search`/`term`/`query`/`title` are accepted and silently ignored — and no filter parameter is needed for full coverage, so the provider walks every page until `payload.hasMore` turns false and lets `title_filter` gate the results (rule 5); `max_pages` (default 120) is a safety bound above the observed 88 pages, not a coverage setting. Per rule 2 the emitted URL is each row's `thirdPartyUrl` — the employer's own ATS (teamdoor.io, Greenhouse, Lever, BambooHR, Breezy, self-hosted) — with the board's `utm_*` ad parameters stripped, falling back to the Yourator posting page on the 63.9% of rows that carry none. No absolute timestamp is published (only a relative `lastActiveAt` string), so `postedAt` is always omitted. |
 
+## Login-state sources (opt-in, local-only)
+
+Some boards put listings behind a login wall with no zero-auth API. These are
+**not** `providers/` modules (that layer is zero-auth HTTP by contract) and are
+**not** listed in the table above. They are scraped through a *logged-in
+browser session* owned by the user, via the dedicated opt-in entry
+`node scan-browser-source.mjs <id>` (see `lib/browser-source.mjs` and
+`browser-sources/`). Results still land in `data/pipeline.md` and honour the
+same `title_filter`/`location_filter` and dedup as every other source.
+
+| Source | Access | Notes |
+| --- | --- | --- |
+| 智联招聘 (Zhaopin) | Browser (Playwright) + login state | Drives `www.zhaopin.com/jobs` search through the user's own logged-in session (`node scan-browser-source.mjs zhaopin --login` once, then `… zhaopin`). The page is a Vue SSR app behind Tencent EdgeOne bot protection (headed browser required); the first ~20 rows hydrate into `window.__INITIAL_STATE__.positionList`, and a logged-in session turns the list into an **infinite scroll** whose load-more calls (`fe-api.zhaopin.com/c/i/search/positions`, 20 rows each) the source intercepts and accumulates until `hasMore` turns false or `maxPages` (default 10 scroll rounds ≈ 200 rows) is hit. Anonymous / stale login yields only the first page. Configure keywords under `zhaopin_searches:` in `portals.yml`. **Local-only**: not part of the zero-auth registry, and not eligible for it under the [Source Indexing Policy](../CONTRIBUTING.md#source-indexing-policy) — the project does not ship login-scraping in core. |
+
+The framework (`BrowserSource` base class) is deliberately generic: adding a
+source (e.g. BOSS直聘, 猎聘) means dropping one file into `browser-sources/`,
+overriding `searchUrl`/`extract`/`normalizeJob` (plus `nextPage` for click/URL
+pagination, or a self-contained `extract` that drives an infinite scroll).
+`extract` can read DOM selectors, the page's hydration state, or intercept a
+load-more XHR — whichever is most stable for the board; a new board's extraction
+must be confirmed against a live logged-in session (`--debug` dumps the page
+HTML to `output/debug-<id>.html`).
+
 ## Evaluated, not supported
 
 These boards were evaluated alongside `providers/careerviet.mjs` and found NOT

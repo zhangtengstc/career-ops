@@ -4,12 +4,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useRouter } from "next/navigation";
 import {
   DEFAULT_FILTERS,
-  ATS_LABEL,
+  SOURCE_LABEL,
   filtersToParams,
   aiToParams,
   isBroadSearch,
   parseExplorePatch,
-  type AtsSource,
   type DiscoveredOffer,
   type ExploreFilters,
   type ExploreMode,
@@ -50,7 +49,7 @@ type ExploreCtx = {
   phase: Phase;
   running: boolean;
   offers: DiscoveredOffer[];
-  sources: Partial<Record<AtsSource, SourceState>>;
+  sources: Partial<Record<string, SourceState>>;
   matchCount: number;
   companiesScanned: number;
   companiesAvailable: number;
@@ -102,7 +101,7 @@ type ResultSnapshot = {
   companiesAvailable: number;
   capHit: boolean;
   droppedNoDate: number;
-  sources: Partial<Record<AtsSource, SourceState>>;
+  sources: Partial<Record<string, SourceState>>;
   partial: boolean;
   status: string;
   error: string;
@@ -119,7 +118,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const touched = useRef(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [offers, setOffers] = useState<DiscoveredOffer[]>([]);
-  const [sources, setSources] = useState<Partial<Record<AtsSource, SourceState>>>({});
+  const [sources, setSources] = useState<Partial<Record<string, SourceState>>>({});
   const [matchCount, setMatchCount] = useState(0);
   const [companiesScanned, setCompaniesScanned] = useState(0);
   // Authoritative scan-health signals (scanner --json mode, #1199): tell a capped /
@@ -169,8 +168,9 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setError("");
     setScannerMissing(false);
     setStatus("Casting the net across the ATS network…");
-    const init: Partial<Record<AtsSource, SourceState>> = {};
+    const init: Partial<Record<string, SourceState>> = {};
     for (const a of f.ats) init[a] = { state: "queued" };
+    for (const ls of f.loginSources) init[ls] = { state: "queued" };
     setSources(init);
     if (typeof window !== "undefined") {
       const qs = filtersToParams(f);
@@ -222,17 +222,21 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
             switch (ev.kind) {
               case "atsStart":
                 setPhase("scanning");
-                setStatus(`Walking ${ATS_LABEL[ev.ats as AtsSource] ?? ev.ats} — ${ev.companies.toLocaleString()} companies`);
-                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats as AtsSource], state: "active", companies: ev.companies } }));
+                setStatus(
+                  ev.companies > 0
+                    ? `Walking ${SOURCE_LABEL[ev.ats] ?? ev.ats} — ${ev.companies.toLocaleString()} companies`
+                    : `Scanning ${SOURCE_LABEL[ev.ats] ?? ev.ats}…`,
+                );
+                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats], state: "active", companies: ev.companies } }));
                 break;
               case "progress":
                 // `matches` is the GLOBAL running total (the engine batches the
                 // offer list to the very end), so it drives the live hero counter.
                 setMatchCount((m) => Math.max(m, ev.matches));
-                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats as AtsSource], state: "active", done: ev.scanned, total: ev.total } }));
+                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats], state: "active", done: ev.scanned, total: ev.total } }));
                 break;
               case "atsDone":
-                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats as AtsSource], state: ev.unreachable > 0 ? "noisy" : "swept", unreachable: ev.unreachable } }));
+                setSources((s) => ({ ...s, [ev.ats]: { ...s[ev.ats], state: ev.unreachable > 0 ? "noisy" : "swept", unreachable: ev.unreachable } }));
                 break;
               case "offer":
                 acc.push(ev.offer);
@@ -271,7 +275,7 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     // Mark any still-active sources as swept (stream ended).
     setSources((s) => {
       const next = { ...s };
-      for (const k of Object.keys(next) as AtsSource[]) if (next[k]?.state === "active" || next[k]?.state === "queued") next[k] = { ...next[k]!, state: "swept" };
+      for (const k of Object.keys(next)) if (next[k]?.state === "active" || next[k]?.state === "queued") next[k] = { ...next[k]!, state: "swept" };
       return next;
     });
 
@@ -415,10 +419,8 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     } catch {
       cliId = null;
     }
-    if (!cliId) {
-      setPhase("blocked");
-      return;
-    }
+    // No cliId gate here: a login-source intent (智联…) routes server-side
+    // without a CLI; an open-web hunt with no CLI 404s → the "needs a CLI" panel.
     runningRef.current = true;
     setPhase("casting");
     setOffers([]);

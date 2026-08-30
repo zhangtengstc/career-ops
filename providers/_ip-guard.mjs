@@ -95,7 +95,7 @@ function v4ToInt(address) {
  * @param {string} address - Resolved IP literal, as dns.lookup returns it.
  * @returns {boolean} True when the address is private/loopback/reserved.
  */
-export function isBlockedAddress(address) {
+export function isBlockedAddress(address, { allowClashFakeIp = false } = {}) {
   const raw = String(address ?? '').trim();
   if (!raw) return true; // nothing to validate is not the same as safe
 
@@ -104,6 +104,11 @@ export function isBlockedAddress(address) {
 
   const asV4 = v4ToInt(addr);
   if (asV4 !== null) {
+    // Clash/mihomo TUN mode commonly maps public names into 198.18.0.0/16 and
+    // intercepts the resulting connection. Keep that special-use range blocked
+    // by default; callers may opt in explicitly when they knowingly run that
+    // local proxy. 198.19.0.0/16 remains blocked even with the opt-in.
+    if (allowClashFakeIp && (asV4 & 0xFFFF0000) >>> 0 === 0xC6120000) return false;
     return V4_BLOCKED.some(([net, bits]) => {
       const mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
       return (asV4 & mask) >>> 0 === net;

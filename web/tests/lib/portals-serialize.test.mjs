@@ -50,3 +50,22 @@ test("a keyword that could break YAML is quoted, not injected", () => {
   const doc = yaml.load(serializePortals({ ...empty, blockHard: ["a: b", "- x", '"q"'] }));
   assert.deepEqual(doc.location_filter.block_hard, ["a: b", "- x", '"q"']);
 });
+
+test("search_params round-trip (semantic conditions for the login-state source)", () => {
+  // The AI-search intent layer carries salary/education/experience/… here for
+  // zhaopin (or another login source) to map to its own URL codes. The
+  // serializer must not drop or mangle them.
+  const f = {
+    ...empty,
+    positive: ["客户成功"],
+    allow: ["上海"],
+    searchParams: { education: "本科", salary: "15-25K", experience: "3-5年" },
+  };
+  const doc = yaml.load(serializePortals(f));
+  assert.deepEqual(doc.search_params, { education: "本科", salary: "15-25K", experience: "3-5年" });
+});
+
+test("empty/absent searchParams → no search_params section", () => {
+  const doc = yaml.load(serializePortals({ ...empty, positive: ["x"] }));
+  assert.equal(doc.search_params, undefined);
+});

@@ -52,6 +52,12 @@
 import dns from 'node:dns';
 import { inProviderFetch, isBlockedAddress, blockedAddressError } from './_ip-guard.mjs';
 
+// Clash/mihomo TUN users may explicitly permit its default fake-IP pool. This
+// is deliberately opt-in: globally treating 198.18.0.0/16 as public would
+// weaken the provider SSRF boundary on machines that route the benchmark range
+// to local services.
+const ALLOW_CLASH_FAKE_IP = process.env.CAREER_OPS_ALLOW_CLASH_FAKE_IP === '1';
+
 /**
  * DNS failures that mean *the resolver itself refused or failed*, as opposed
  * to answering "no such host". Only these are safe to negative-cache and to
@@ -267,7 +273,7 @@ export function createCachedLookup(realLookup, options = {}) {
       const addresses = Array.isArray(rest[0])
         ? rest[0].map((entry) => entry && entry.address)
         : [rest[0]];
-      const bad = addresses.find((address) => isBlockedAddress(address));
+      const bad = addresses.find((address) => isBlockedAddress(address, { allowClashFakeIp: ALLOW_CLASH_FAKE_IP }));
       if (bad !== undefined) return callback(blockedAddressError(hostname, bad));
       return callback(err, ...rest);
     };

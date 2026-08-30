@@ -13,6 +13,18 @@ export const ATS_LABEL: Record<AtsSource, string> = {
   workday: "Workday",
 };
 
+// Login-state browser sources (browser-sources/*.mjs) are a DIFFERENT class from
+// the zero-auth ATS network: they scrape a logged-in browser session, so they are
+// surfaced as a separate group (not merged into ATS_SOURCES) and scanned through
+// scan-browser-source.mjs instead of scan-ats-full.mjs.
+export type LoginSource = "zhaopin";
+export const LOGIN_SOURCES: LoginSource[] = ["zhaopin"];
+export const LOGIN_LABEL: Record<LoginSource, string> = {
+  zhaopin: "智联招聘",
+};
+/** Combined label lookup for progress chips (ATS + login-state sources). */
+export const SOURCE_LABEL: Record<string, string> = { ...ATS_LABEL, ...LOGIN_LABEL };
+
 /** The full UI filter state. The keyword/location lists mirror scan.mjs's
  *  buildTitleFilter / buildLocationFilter semantics; sinceDays/ats/limitPerAts map
  *  to scan-ats-full.mjs's --since / --ats / --limit. */
@@ -25,6 +37,7 @@ export type ExploreFilters = {
   alwaysAllow: string[];
   sinceDays: number;
   ats: AtsSource[];
+  loginSources: LoginSource[];
   limitPerAts: number;
 };
 
@@ -37,6 +50,7 @@ export const DEFAULT_FILTERS: ExploreFilters = {
   alwaysAllow: [],
   sinceDays: 7,
   ats: [...ATS_SOURCES],
+  loginSources: [],
   limitPerAts: 150,
 };
 
@@ -107,11 +121,20 @@ function clampNum(v: unknown, lo: number, hi: number, fallback: number): number 
 }
 
 function cleanAts(v: unknown): AtsSource[] {
-  if (!Array.isArray(v)) return [...ATS_SOURCES];
+  if (!Array.isArray(v)) return [...ATS_SOURCES]; // absent → all (default)
   const out = v
     .map((a) => String(a).toLowerCase())
     .filter((a): a is AtsSource => (ATS_SOURCES as string[]).includes(a));
-  return out.length ? Array.from(new Set(out)) : [...ATS_SOURCES];
+  return Array.from(new Set(out)); // explicit [] → [] (login-state-only scans)
+}
+
+/** Login-state sources default to OFF (opt-in, needs a saved login session). */
+function cleanLoginSources(v: unknown): LoginSource[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((a) => String(a).toLowerCase())
+    .filter((a): a is LoginSource => (LOGIN_SOURCES as string[]).includes(a))
+    .filter((a, i, arr) => arr.indexOf(a) === i);
 }
 
 /** Apply a (possibly partial) action/assistant patch onto a base. The assistant
@@ -123,7 +146,7 @@ export function parseExplorePatch(
   base: ExploreFilters = DEFAULT_FILTERS,
   merge = false,
 ): ExploreFilters {
-  const next: ExploreFilters = { ...base, ats: [...base.ats] };
+  const next: ExploreFilters = { ...base, ats: [...base.ats], loginSources: [...base.loginSources] };
   const lists: [keyof ExploreFilters, string][] = [
     ["positive", "positive"],
     ["negative", "negative"],
@@ -142,6 +165,8 @@ export function parseExplorePatch(
   if (raw.limit !== undefined) next.limitPerAts = clampNum(raw.limit, 50, 500, base.limitPerAts);
   if (raw.limitPerAts !== undefined) next.limitPerAts = clampNum(raw.limitPerAts, 50, 500, base.limitPerAts);
   if (raw.ats !== undefined) next.ats = cleanAts(raw.ats);
+  if (raw.ls !== undefined) next.loginSources = cleanLoginSources(raw.ls);
+  if (raw.loginSources !== undefined) next.loginSources = cleanLoginSources(raw.loginSources);
   return next;
 }
 
@@ -156,6 +181,7 @@ export function filtersToParams(f: ExploreFilters): string {
   if (f.alwaysAllow.length) sp.set("home", f.alwaysAllow.join(","));
   if (f.sinceDays !== DEFAULT_FILTERS.sinceDays) sp.set("since", String(f.sinceDays));
   if (f.ats.length !== ATS_SOURCES.length) sp.set("ats", f.ats.join(","));
+  if (f.loginSources.length) sp.set("ls", f.loginSources.join(","));
   if (f.limitPerAts !== DEFAULT_FILTERS.limitPerAts) sp.set("limit", String(f.limitPerAts));
   return sp.toString();
 }
@@ -171,7 +197,8 @@ export function paramsToFilters(sp: URLSearchParams, base: ExploreFilters = DEFA
       blockHard: split(sp.get("hardno")),
       alwaysAllow: split(sp.get("home")),
       since: sp.get("since") ?? undefined,
-      ats: split(sp.get("ats")),
+      ats: sp.has("ats") ? (sp.get("ats") || "").split(",") : undefined,
+      ls: split(sp.get("ls")),
       limit: sp.get("limit") ?? undefined,
     },
     base,

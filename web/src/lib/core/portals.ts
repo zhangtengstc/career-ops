@@ -21,7 +21,11 @@ import { profileTargetKeywords } from "@/lib/profile-keywords.mjs";
  *   location block_hard > always_allow > block > allow (case-insensitive substring);
  *   block_hard is the one tier always_allow cannot override (scan.mjs, #2956)
  */
-type FilterLists = Pick<ExploreFilters, "positive" | "negative" | "allow" | "block" | "alwaysAllow" | "blockHard">;
+type FilterLists = Pick<ExploreFilters, "positive" | "negative" | "allow" | "block" | "alwaysAllow" | "blockHard"> & {
+  /** Semantic search conditions (LLM intent) the login-state source maps to its
+   *  own URL codes (e.g. zhaopin: salary/education/experience/jobStatus/…). */
+  searchParams?: Record<string, string>;
+};
 
 function listFrom(v: unknown): string[] {
   return cleanChips(v);

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { X, Ban, Clock, MapPin, ChevronDown, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { ATS_LABEL, ATS_SOURCES, cleanChips, type AtsSource, type ExploreFilters } from "@/lib/explore";
+import { ATS_LABEL, ATS_SOURCES, LOGIN_LABEL, LOGIN_SOURCES, cleanChips, type AtsSource, type ExploreFilters, type LoginSource } from "@/lib/explore";
 
 const RECENCY = [
   { label: "24h", days: 1 },
@@ -112,7 +112,12 @@ export function FilterBuilder({
   const toggleAts = (a: AtsSource) => {
     const has = filters.ats.includes(a);
     const next = has ? filters.ats.filter((x) => x !== a) : [...filters.ats, a];
-    set({ ats: next.length ? next : filters.ats });
+    set({ ats: next }); // empty is allowed — a login-state-only scan has no ATS sources
+  };
+  const toggleLoginSource = (ls: LoginSource) => {
+    const has = filters.loginSources.includes(ls);
+    const next = has ? filters.loginSources.filter((x) => x !== ls) : [...filters.loginSources, ls];
+    set({ loginSources: next });
   };
 
   return (
@@ -157,7 +162,7 @@ export function FilterBuilder({
         </div>
 
         <div>
-          <Label hint={filters.ats.length === 0 ? "pick at least one" : undefined}>Sources</Label>
+          <Label hint={filters.ats.length === 0 && filters.loginSources.length === 0 ? "pick at least one source" : undefined}>Sources</Label>
           <div className="flex flex-wrap gap-1.5">
             {ATS_SOURCES.map((a) => {
               const on = filters.ats.includes(a);
@@ -176,6 +181,31 @@ export function FilterBuilder({
               );
             })}
           </div>
+        </div>
+
+        <div>
+          <Label hint="opt-in · 需先登录">登录态来源</Label>
+          <div className="flex flex-wrap gap-1.5">
+            {LOGIN_SOURCES.map((ls) => {
+              const on = filters.loginSources.includes(ls);
+              return (
+                <button
+                  key={ls}
+                  type="button"
+                  onClick={() => toggleLoginSource(ls)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors max-sm:min-h-[44px]",
+                    on ? "border-brand/40 bg-brand-soft text-brand" : "border-border text-muted hover:text-foreground",
+                  )}
+                >
+                  {LOGIN_LABEL[ls]}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-faint">
+            登录态来源扫描时会弹出有头浏览器窗口。首次使用请先在项目目录登录一次：<code className="break-all">node scan-browser-source.mjs zhaopin --login</code>
+          </p>
         </div>
       </div>
 

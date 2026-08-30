@@ -45,6 +45,7 @@ test('blocks loopback, private, link-local and reserved ranges', () => {
     '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1',
     '169.254.169.254',      // cloud instance metadata — the usual SSRF target
     '100.64.0.1',           // CGNAT
+    '198.18.0.1', '198.19.255.255', // benchmarking / Clash fake-IP pool
     '224.0.0.1', '255.255.255.255',
     '::1', '::', 'fc00::1', 'fd12::3', 'fe80::1', 'fe80::1%eth0', 'ff02::1',
     '::ffff:127.0.0.1',     // IPv4-mapped loopback
@@ -64,6 +65,13 @@ test('allows ordinary public addresses, including the range boundaries', () => {
   ]) {
     assert.equal(isBlockedAddress(address), false, `${address} should be allowed`);
   }
+});
+
+test('Clash fake-IP compatibility is explicit and limited to 198.18.0.0/16', () => {
+  assert.equal(isBlockedAddress('198.18.0.1', { allowClashFakeIp: true }), false);
+  assert.equal(isBlockedAddress('198.18.255.255', { allowClashFakeIp: true }), false);
+  assert.equal(isBlockedAddress('198.19.0.1', { allowClashFakeIp: true }), true);
+  assert.equal(isBlockedAddress('198.18.0.1'), true, 'default remains fail-closed');
 });
 
 test('unparseable input is blocked, not guessed', () => {
