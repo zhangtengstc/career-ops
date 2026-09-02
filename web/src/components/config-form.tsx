@@ -72,10 +72,14 @@ export function ConfigForm() {
         // Highlight-only used to look configured while jobs still read empty localStorage.
         setCliId((prev) => {
           if (prev) return prev;
-          const only = list.filter((c) => c.installed);
-          if (only.length !== 1) return list.find((c) => c.installed)?.id || "";
-          if (!readSavedCliId()) persistCliId(only[0].id);
-          return only[0].id;
+          const installed = list.filter((c) => c.installed);
+          // Multiple installed CLIs (e.g. codex + hermes) → leave UNSELECTED.
+          // Highlighting a pick that was never persisted reads as "configured"
+          // while every CLI-backed feature still reads empty localStorage and
+          // 404s — the exact divergence the sole-CLI branch below was fixed for.
+          if (installed.length !== 1) return "";
+          if (!readSavedCliId()) persistCliId(installed[0].id);
+          return installed[0].id;
         });
       })
       .catch(() => setClis([]));
@@ -171,7 +175,14 @@ export function ConfigForm() {
                       <button
                         type="button"
                         disabled={!c.installed}
-                        onClick={() => setCliId(c.id)}
+                        onClick={() => {
+                          setCliId(c.id);
+                          // Persist IMMEDIATELY: a selected-but-unsaved card looks
+                          // configured while every CLI-backed feature reads
+                          // localStorage and 404s. The Save button still owns the
+                          // other prefs (mode/provider/logos).
+                          persistCliId(c.id);
+                        }}
                         className={cn(
                           "flex flex-1 items-center gap-2 text-left max-sm:min-h-[44px]",
                           c.installed ? "" : "cursor-default",

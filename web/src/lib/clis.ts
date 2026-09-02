@@ -110,6 +110,13 @@ function searchDirs(): string[] {
 // On Windows, executables carry an extension (claude.exe, claude.cmd, ...).
 // Mirror the shell's PATHEXT resolution so a native-installer claude.exe is
 // found, not just an extensionless npm shim. On POSIX, "" keeps the bare name.
+//
+// Order matters on win32: extensions FIRST, the bare name LAST. An
+// extensionless file next to its .cmd twin is npm's POSIX sh shim — a bash
+// script CreateProcess can NEVER execute (spawn → async ENOENT, and every
+// CLI-invoking route silently failed this way on Windows). Trying .exe/.cmd
+// first lands on a real entry point; bare survives only as a last resort for
+// the (rare) genuine extensionless executable.
 function binCandidates(bin: string): string[] {
   if (process.platform !== "win32") return [bin];
   const pathext = process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD";
@@ -117,11 +124,11 @@ function binCandidates(bin: string): string[] {
     .split(";")
     .map((e) => e.trim())
     .filter(Boolean)
-    // Only include extensions that `child_process.spawn()` can execute directly.
+    // Only include extensions that `child_process.spawn()` can execute directly
+    // (spawnHeadlessCli unwraps .cmd/.bat npm shims to `node <entry>.js`).
     .filter((e) => [".com", ".exe", ".bat", ".cmd"].includes(e.toLowerCase()));
 
-  // Try the bare name too (some environments provide an extensionless shim).
-  return [bin, ...exts.map((ext) => bin + ext)];
+  return [...exts.map((ext) => bin + ext), bin];
 }
 
 export function findBin(bin: string, dirs = searchDirs()): string | null {

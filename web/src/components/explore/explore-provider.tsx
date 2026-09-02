@@ -15,6 +15,7 @@ import {
   type ScanEvent,
 } from "@/lib/explore";
 import { makeAiStreamParser, type AiTraceChunk } from "@/lib/explore-ai";
+import { readSavedCliId, resolveCliId } from "@/lib/saved-cli";
 import { MAX_OFFER_LIMIT } from "@/lib/whats-new.mjs";
 import { isScannerMissing } from "@/lib/explore-error.mjs";
 
@@ -413,14 +414,13 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     if (runningRef.current) return;
     const intent = aiIntentRef.current.trim();
     if (!intent) return;
-    let cliId: string | null = null;
-    try {
-      cliId = JSON.parse(localStorage.getItem("career-ops:config") || "{}").cliId || null;
-    } catch {
-      cliId = null;
-    }
-    // No cliId gate here: a login-source intent (智联…) routes server-side
-    // without a CLI; an open-web hunt with no CLI 404s → the "needs a CLI" panel.
+    // Saved pick, or the sole-installed fallback (same resolution job-store
+    // uses) — never a raw localStorage read that can diverge from what the
+    // Config page displayed.
+    const cliId = readSavedCliId() || (await resolveCliId());
+    // No cliId gate here: BOTH paths need a CLI now (login-source intents get
+    // their keywords from the LLM intent pass, never a tokenizer) — without one
+    // the server 404s → the "needs a CLI" panel, same as the open-web hunt.
     runningRef.current = true;
     setPhase("casting");
     setOffers([]);
@@ -553,6 +553,12 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     if (typeof snap.aiIntent === "string") setAiIntent(snap.aiIntent);
     // Never rehydrate INTO a running phase — no live stream backs it.
     const RUNNING = new Set<Phase>(["casting", "scanning", "revealing", "hunting"]);
+    // Nor into a STALE "blocked": if a CLI has been saved since that snapshot
+    // was taken, the wall no longer applies — restore idle so a retry can run.
+    if (snap.phase === "blocked" && readSavedCliId()) {
+      setPhase("idle");
+      return;
+    }
     setPhase(RUNNING.has(snap.phase) ? (snap.offers.length ? "results" : "idle") : snap.phase);
   }, []);
 

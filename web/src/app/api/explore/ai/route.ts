@@ -7,6 +7,7 @@ import { resolveCli } from "@/lib/clis";
 import { careerOpsRoot, readMemory, rootScript } from "@/lib/career-ops";
 import { writeTempPortals, cleanupTempPortals } from "@/lib/core/portals";
 import { assembleDedupContext } from "@/lib/core/discover";
+import { detectLoginSource, parseZhilianQuery } from "@/lib/login-intent.mjs";
 
 // AI search orchestrates modes/web-hunt.md by running the USER'S configured CLI
 // headless (CLI-agnostic, like the assistant). Web hunting is slow → generous
@@ -132,75 +133,31 @@ Follow modes/web-hunt.md exactly. You are running headless for the web:
 - DEDUP: skip anything already known below; don't re-propose the user's existing companies.
 `;
 
-/** A login-gated source (智联招聘, …) the user named explicitly in their query. */
+/** A login-gated source (智联招聘, …) the user named explicitly in their query.
+ *  Keywords + conditions ALWAYS come from the LLM intent pass — there is no
+ *  tokenizer fallback (it produced garbage keywords on Chinese request
+ *  phrasing), so a login-source search requires a configured CLI. */
 type LoginSourceIntent = {
   id: string;
   label: string;
   keywords: string[];
   city: string | null;
   /** Semantic search conditions (salary/education/…) the source maps to its own
-   *  URL codes. Empty when only heuristic parsing ran; populated by the LLM
-   *  intent-recognition pass. */
+   *  URL codes. */
   searchParams: Record<string, string>;
 };
 
-// Login-gated sources the AI-search entry can route to directly (reusing the
-// BrowserSource scanners) instead of asking the agent to hunt the open web.
-// BOSS直聘 / 猎聘 are intentionally NOT here yet — only zhaopin has a source.
-const LOGIN_SOURCE_PATTERNS: { id: string; label: string; re: RegExp }[] = [
-  { id: "zhaopin", label: "智联招聘", re: /智联|zhaopin/i },
-];
-
-// City names (CN + EN) the search can narrow to. Matched FIRST so a place name is
-// extracted as a LOCATION condition, never mistaken for a job keyword. Keep in
-// sync with browser-sources/zhaopin.mjs CITY_CODES.
-const CITY_NAMES = [
-  "北京", "上海", "天津", "深圳", "广州", "杭州", "苏州", "南京", "武汉", "长沙", "重庆",
-  "Beijing", "Shanghai", "Tianjin", "Shenzhen", "Guangzhou", "Hangzhou", "Suzhou", "Nanjing", "Wuhan", "Changsha", "Chongqing",
-];
-
-// Strip request verbs / modifiers / fillers so the surviving tokens are the
-// actual job keywords. Longest alternation FIRST ("寻找" before "找", "工作地点"
-// before "地点") so a word is never half-replaced. Single-char CONNECTIVES (在/上/
-// 里/的/和…) are NOT here — they're dropped per-token in SINGLE_JUNK_RE so they
-// can't damage a keyword that merely contains them ("用户" is never touched).
-const NOISE_RE = /帮我|请|麻烦|一下|看看|看一下|寻找|搜索|查找|查询|有没有|有哪些|工作地点|相关的|相关|职位|岗位|工作|机会|招聘|方向|方面|城市|地点|搜|找|查|寻/g;
-const SINGLE_JUNK_RE = /^(的|了|呢|吗|啊|呀|用|在|上|里|和|与|或|都|也|还|就|把|被|给|为|从|对|请|要|想|及)$/;
-
-function detectLoginSourceIntent(query: string): LoginSourceIntent | null {
-  for (const { id, label, re } of LOGIN_SOURCE_PATTERNS) {
-    if (!re.test(query)) continue;
-
-    // 1. Extract a location (city) FIRST, so "上海" becomes a condition, not a keyword.
-    let city: string | null = null;
-    let rest = query;
-    for (const name of CITY_NAMES) {
-      if (rest.includes(name)) {
-        city = name;
-        rest = rest.split(name).join(" ");
-        break;
-      }
-    }
-
-    // 2. Extract the job keywords from what remains.
-    const keywords = rest
-      .replace(re, " ")
-      .replace(NOISE_RE, " ")
-      .split(/[\s,，、/;；]+/)
-      .map((k) => k.trim())
-      .filter((k) => k && !SINGLE_JUNK_RE.test(k));
-
-    if (!keywords.length) return null;
-    return { id, label, keywords, city, searchParams: {} };
-  }
-  return null;
-}
+// Source routing (detectLoginSource) and the LLM-output parser
+// (parseZhilianQuery / cleanKeyword) live in @/lib/login-intent.mjs — a pure
+// .mjs module shared with web/tests/lib/login-intent.test.mjs so the route and
+// its tests can never drift.
 
 // ── LLM intent recognition (natural language → structured search conditions) ──
-// The heuristic parse above only finds a source + keyword + city. For the FULL
-// condition surface (salary / education / experience / job status / company type /
-// company size) the user's own CLI is asked to map the query to a fixed JSON
-// schema — the "关键条件参数" the source then narrows on. See skill
+// The ONLY keyword/condition extractor: the user's own CLI maps the query to a
+// fixed JSON schema — the "关键条件参数" the source then narrows on. There is NO
+// regex/tokenizer fallback (it mangled Chinese request phrasing into garbage
+// keywords), so a login-source search without a working CLI fails loudly
+// instead of searching for the wrong thing. See skill
 // references/zhaopin-search-query.md for the code table this feeds.
 
 /** Structured search conditions the LLM emits (semantic values, NOT codes). */
@@ -215,7 +172,10 @@ type ZhilianQuery = {
   companySize: string | null;
 };
 
-const INTENT_TIMEOUT_MS = 120_000;
+// The intent CLI boot can be slow — hermes spins up a full agent runtime, and a
+// cold first run plus model queueing easily exceeds 2 minutes. Budget 5 min:
+// the request's maxDuration is 600s and the zhaopin scan after this needs ~90s.
+const INTENT_TIMEOUT_MS = 300_000;
 
 function intentPrompt(query: string): string {
   return `你是搜索条件解析器。把下面的自然语言搜索需求转换成智联招聘的搜索条件，只输出一个 JSON 对象，不要任何解释、不要 markdown 代码块。
@@ -232,65 +192,6 @@ JSON 字段（没有提到的字段填 null）：
 
 搜索需求：「${query}」`;
 }
-
-// Strip the modifier/filler words an LLM tends to drag along with a keyword
-// ("客户成功相关", "客户成功岗位", "找客户成功的工作") → the bare role name, so both
-// zhaopin `kw` and the title filter get a clean term. Mirrors the heuristic
-// NOISE_RE above; keep the two lists in sync.
-const KEYWORD_MODIFIER_RE = /相关|职位|岗位|工作|机会|招聘|方向|方面|行业/g;
-
-function cleanKeyword(k: string | null): string | null {
-  if (!k) return null;
-  const cleaned = k.replace(KEYWORD_MODIFIER_RE, "").trim();
-  return cleaned || null;
-}
-
-function normalizeZhilianQuery(obj: unknown): ZhilianQuery | null {
-  if (!obj || typeof obj !== "object") return null;
-  const o = obj as Record<string, unknown>;
-  const str = (k: string): string | null => {
-    const v = o[k];
-    return typeof v === "string" && v.trim() ? v.trim() : null;
-  };
-  const q: ZhilianQuery = {
-    keyword: cleanKeyword(str("keyword")),
-    city: str("city"),
-    salary: str("salary"),
-    education: str("education"),
-    experience: str("experience"),
-    jobStatus: str("jobStatus"),
-    companyType: str("companyType"),
-    companySize: str("companySize"),
-  };
-  if (!q.keyword) return null;
-  return q;
-}
-
-/** Pull the JSON object out of the CLI's (possibly noisy) final output. */
-function parseZhilianQuery(text: string): ZhilianQuery | null {
-  const candidates: string[] = [];
-  // Whole-text { … } — compact single-object output (claude -p, gemini, …).
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start !== -1 && end > start) candidates.push(text.slice(start, end + 1));
-  // Per-line { … } — the final message usually sits on its own line amid a
-  // banner / exec logs / echoed file contents (codex does all three).
-  for (const line of text.split(/\r?\n/)) {
-    const t = line.trim();
-    if (t.startsWith("{") && t.endsWith("}")) candidates.push(t);
-  }
-  // Last candidate wins (the final message is authoritative).
-  for (let i = candidates.length - 1; i >= 0; i--) {
-    try {
-      const q = normalizeZhilianQuery(JSON.parse(candidates[i]));
-      if (q) return q;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
-}
-
 /** Ask the user's CLI to convert the query into structured conditions. */
 function runIntentRecognition(
   cliId: string,
@@ -303,12 +204,13 @@ function runIntentRecognition(
 
   return new Promise((resolve) => {
     let out = "";
+    let stderrBuf = "";
     let settled = false;
     let killer: ReturnType<typeof setTimeout> | undefined;
     let tmpDir: string | undefined;
     let resultFile: string | undefined;
 
-    const finish = (q: ZhilianQuery | null) => {
+    const finish = (q: ZhilianQuery | null, why?: string) => {
       if (settled) return;
       settled = true;
       if (killer) clearTimeout(killer);
@@ -318,6 +220,16 @@ function runIntentRecognition(
         } catch {
           /* best-effort temp cleanup */
         }
+      }
+      // Intent failure must be diagnosable — the caller turns it into a loud
+      // 502, and the server's stderr tail explains WHY (auth, spawn, timeout).
+      // Flat string, NOT an object: Next's dev log JSON-serializes only the
+      // message and silently drops object args (an object logs as "{}").
+      if (!q) {
+        console.error(
+          `[intent-recognition] no usable result cli=${cliId} why=${why ?? "unparseable output"} ` +
+            `stdoutBytes=${Buffer.byteLength(out, "utf8")} stderrTail=${JSON.stringify(stderrBuf.slice(-500))}`,
+        );
       }
       resolve(q);
     };
@@ -345,11 +257,11 @@ function runIntentRecognition(
     child.stdout.on("data", (d: Buffer) => {
       out = (out + d.toString()).slice(-64_000);
     });
-    child.stderr.on("data", () => {
-      /* ignore */
+    child.stderr.on("data", (d: Buffer) => {
+      stderrBuf = (stderrBuf + d.toString()).slice(-8_000);
     });
-    child.on("error", () => finish(null));
-    child.on("close", () => {
+    child.on("error", (e) => finish(null, `spawn error: ${e instanceof Error ? e.message : String(e)}`));
+    child.on("close", (code) => {
       if (isCodex && resultFile) {
         let text = "";
         try {
@@ -360,9 +272,9 @@ function runIntentRecognition(
         } catch {
           /* no final-message file */
         }
-        finish(parseZhilianQuery(text));
+        finish(parseZhilianQuery(text), `codex exit ${code ?? "unknown"}, no parseable final message`);
       } else {
-        finish(parseZhilianQuery(out));
+        finish(parseZhilianQuery(out), `exit ${code ?? "unknown"}, no parseable JSON in stdout`);
       }
     });
     killer = setTimeout(() => {
@@ -371,7 +283,7 @@ function runIntentRecognition(
       } catch {
         /* already gone */
       }
-      finish(null);
+      finish(null, `timeout after ${INTENT_TIMEOUT_MS}ms`);
     }, INTENT_TIMEOUT_MS);
   });
 }
@@ -517,35 +429,41 @@ export async function POST(req: Request) {
   if (!query) return Response.json({ error: "query required" }, { status: 400 });
 
   // Login-gated source intent (智联招聘…) routes straight to the BrowserSource
-  // scanner. When a CLI is configured, ask it to parse the query into structured
-  // conditions (keyword + city + salary/education/…) FIRST — the "关键条件参数"
-  // requirement — and fall back to the heuristic parse when the CLI is absent or
-  // returns nothing usable. The SAME <<offer>> stream grammar either way.
-  const loginIntent = detectLoginSourceIntent(query);
-  if (loginIntent) {
-    const resolved = cliId ? resolveCli(cliId) : null;
-    if (resolved) {
-      const { spec, binPath } = resolved;
-      const llm = await runIntentRecognition(cliId!, binPath, spec.args, query);
-      if (llm && llm.keyword) {
-        loginIntent.keywords = [llm.keyword];
-        // LLM null city falls back to the heuristic city (double coverage).
-        loginIntent.city = llm.city ?? loginIntent.city;
-        loginIntent.searchParams = {
-          ...(llm.salary ? { salary: llm.salary } : {}),
-          ...(llm.education ? { education: llm.education } : {}),
-          ...(llm.experience ? { experience: llm.experience } : {}),
-          ...(llm.jobStatus ? { jobStatus: llm.jobStatus } : {}),
-          ...(llm.companyType ? { companyType: llm.companyType } : {}),
-          ...(llm.companySize ? { companySize: llm.companySize } : {}),
-        };
-      }
+  // scanner. Keywords/conditions come ONLY from the LLM intent pass — a
+  // tokenizer fallback turned Chinese request phrasing into garbage keywords
+  // (["去","一些fde","要求"]), so no CLI → the same 404 "needs a CLI" panel as
+  // the open-web path, and an unparseable LLM result → a loud 502, never a
+  // silent degraded search.
+  const loginSource = detectLoginSource(query);
+  if (loginSource) {
+    const loginResolved = cliId ? resolveCli(cliId) : null;
+    if (!loginResolved) {
+      return Response.json({ error: `CLI '${cliId || ""}' not found on this machine` }, { status: 404 });
     }
+    const llm = await runIntentRecognition(cliId!, loginResolved.binPath, loginResolved.spec.args, query);
+    if (!llm || !llm.keyword) {
+      return Response.json(
+        { error: "意图识别失败：未能从查询中解析出职位关键词，请换个说法或稍后重试。" },
+        { status: 502 },
+      );
+    }
+    const loginIntent: LoginSourceIntent = {
+      ...loginSource,
+      keywords: [llm.keyword],
+      city: llm.city,
+      searchParams: {
+        ...(llm.salary ? { salary: llm.salary } : {}),
+        ...(llm.education ? { education: llm.education } : {}),
+        ...(llm.experience ? { experience: llm.experience } : {}),
+        ...(llm.jobStatus ? { jobStatus: llm.jobStatus } : {}),
+        ...(llm.companyType ? { companyType: llm.companyType } : {}),
+        ...(llm.companySize ? { companySize: llm.companySize } : {}),
+      },
+    };
     return streamLoginSourceSearch(loginIntent);
   }
 
-  // No cliId → let resolveCli 404 so the client shows the "needs a CLI" panel
-  // (a login-source intent above already routed — heuristic parse needs no CLI).
+  // No cliId → let resolveCli 404 so the client shows the "needs a CLI" panel.
   const resolved = cliId ? resolveCli(cliId) : null;
   if (!resolved) return Response.json({ error: `CLI '${cliId || ""}' not found on this machine` }, { status: 404 });
   const { spec, binPath } = resolved;
