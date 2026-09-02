@@ -31,6 +31,18 @@ test("routes the english source name case-insensitively", () => {
   assert.equal(detectLoginSource("search Zhaopin for java jobs")?.id, "zhaopin");
 });
 
+test("routes a query naming BOSS直聘 to boss", () => {
+  assert.deepEqual(detectLoginSource("在BOSS直聘上找数据分析，上海"), {
+    id: "boss",
+    label: "BOSS直聘",
+  });
+});
+
+test("routes 直聘 / zhipin aliases to boss", () => {
+  assert.equal(detectLoginSource("去直聘看看产品经理")?.id, "boss");
+  assert.equal(detectLoginSource("search zhipin for java")?.id, "boss");
+});
+
 test("returns null when no login source is named", () => {
   assert.equal(detectLoginSource("找一份上海的远程工作"), null);
   assert.equal(detectLoginSource(""), null);

@@ -20,6 +20,7 @@
  */
 export const LOGIN_SOURCE_PATTERNS = [
   { id: "zhaopin", label: "智联招聘", re: /智联|zhaopin/i },
+  { id: "boss", label: "BOSS直聘", re: /boss|直聘|zhipin/i },
 ];
 
 /**

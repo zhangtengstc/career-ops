@@ -17,10 +17,11 @@ export const ATS_LABEL: Record<AtsSource, string> = {
 // the zero-auth ATS network: they scrape a logged-in browser session, so they are
 // surfaced as a separate group (not merged into ATS_SOURCES) and scanned through
 // scan-browser-source.mjs instead of scan-ats-full.mjs.
-export type LoginSource = "zhaopin";
-export const LOGIN_SOURCES: LoginSource[] = ["zhaopin"];
+export type LoginSource = "zhaopin" | "boss";
+export const LOGIN_SOURCES: LoginSource[] = ["zhaopin", "boss"];
 export const LOGIN_LABEL: Record<LoginSource, string> = {
   zhaopin: "智联招聘",
+  boss: "BOSS直聘",
 };
 /** Combined label lookup for progress chips (ATS + login-state sources). */
 export const SOURCE_LABEL: Record<string, string> = { ...ATS_LABEL, ...LOGIN_LABEL };

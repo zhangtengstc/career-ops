@@ -295,6 +295,41 @@ try {
       fail('overridden nextPage should return true and record the advance');
     }
   }
+
+  // ── boss (BOSS直聘, nodriver sidecar) ──────────────────────────────
+  {
+    const boss = await import(pathToFileURL(join(ROOT, 'browser-sources/boss.mjs')).href);
+    const { buildSearchUrl: bossUrl, parseSalary: bossSalary, normalizeJob: bossNorm } = boss;
+
+    const bu = bossUrl('数据分析', 1);
+    if (bu.startsWith('https://www.zhipin.com/web/geek/job?') && bu.includes('query=') && bu.includes('city=101020100') && !bu.includes('page=')) {
+      pass('boss buildSearchUrl builds the geek search URL (city=101020100, no page on p1)');
+    } else {
+      fail(`boss buildSearchUrl = ${bu}`);
+    }
+
+    const s1 = bossSalary('18-35K');
+    if (s1 && s1.min === 18000 && s1.max === 35000 && s1.currency === 'CNY') {
+      pass('boss parseSalary: "18-35K" → {min:18000,max:35000,currency:CNY}');
+    } else {
+      fail(`boss parseSalary 18-35K = ${JSON.stringify(s1)}`);
+    }
+    if (bossSalary('18-35K·13薪')?.max === 35000) pass('boss parseSalary strips the ·13薪 bonus suffix');
+    else fail('boss parseSalary should strip ·N薪');
+    if (bossSalary('30K以上')?.min === 30000) pass('boss parseSalary "30K以上" → min 30000');
+    else fail('boss parseSalary 30K以上 failed');
+    if (bossSalary('面议') === null && bossSalary('') === null) pass('boss parseSalary returns null for 面议 / empty');
+    else fail('boss parseSalary should null on 面议/empty');
+
+    const j = bossNorm({ title: '数据分析师', url: 'https://www.zhipin.com/job_detail/x.html', company: '拼多多', location: '上海', salaryDesc: '18-35K' });
+    if (j && j.title === '数据分析师' && j.url === 'https://www.zhipin.com/job_detail/x.html' && j.salary?.min === 18000 && j.company === '拼多多') {
+      pass('boss normalizeJob maps raw Vue job → Job with parsed salary');
+    } else {
+      fail(`boss normalizeJob = ${JSON.stringify(j)}`);
+    }
+    if (bossNorm({ title: '', url: 'https://x.com' }) === null) pass('boss normalizeJob drops rows without a title');
+    else fail('boss normalizeJob should drop title-less rows');
+  }
 } catch (err) {
   fail(`browser-source suite threw: ${err.message}`);
 }

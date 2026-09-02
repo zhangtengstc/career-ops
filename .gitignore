@@ -65,6 +65,8 @@ config/local-paths.txt
 # Login-state browser sessions (cookies/localStorage) saved by
 # `node scan-browser-source.mjs <id> --login` — sensitive, never commit.
 config/browser-state/
+# dev-team recon evidence (page dumps may embed live session tokens/cookies)
+docs/dev-team/**/recon-logs/
 portals.yml
 modes/_profile.md
 modes/_custom.md
