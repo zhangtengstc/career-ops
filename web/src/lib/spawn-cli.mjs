@@ -56,6 +56,37 @@ export function unwrapNpmShim(binPath, platform = process.platform) {
   return js;
 }
 
+/**
+ * Not every .cmd shim wraps node: pip/uv-style launchers wrap a REAL exe —
+ * e.g. hermes.cmd is `@echo off` + `"C:\…\venv\Scripts\hermes.exe" %*`. Node
+ * refuses to spawn .cmd directly (CVE-2024-27980 EINVAL), so unwrap to the
+ * quoted absolute .exe inside and spawn THAT. Returns the exe path, or null
+ * when the shim doesn't reference an existing one.
+ *
+ * @param {string} binPath
+ * @param {string} [platform]
+ * @returns {string|null}
+ */
+export function unwrapExeShim(binPath, platform = process.platform) {
+  if (platform !== "win32") return null;
+  const base = path.basename(binPath).toLowerCase();
+  if (!base.endsWith(".cmd") && !base.endsWith(".bat")) return null;
+  let text;
+  try {
+    text = fs.readFileSync(binPath, "utf8");
+  } catch {
+    return null;
+  }
+  const m = text.match(/"([A-Za-z]:[\\/][^"\r\n]+?\.exe)"/i);
+  if (!m) return null;
+  try {
+    fs.accessSync(m[1]);
+  } catch {
+    return null;
+  }
+  return m[1];
+}
+
 /** A child that has already failed — preserves the async error contract for
  *  callers when spawn itself throws synchronously (e.g. a non-node .cmd). */
 function failedChild(message) {
@@ -86,11 +117,12 @@ function failedChild(message) {
  */
 export function spawnHeadlessCli(binPath, args, options) {
   const shimJs = unwrapNpmShim(binPath);
+  const shimExe = shimJs ? null : unwrapExeShim(binPath);
   let child;
   try {
     child = shimJs
       ? spawn(process.execPath, [shimJs, ...args], options)
-      : spawn(binPath, args, options);
+      : spawn(shimExe ?? binPath, args, options);
   } catch (e) {
     // spawn() throws SYNCHRONOUSLY for a .cmd/.bat it can't unwrap (EINVAL) —
     // callers only listen for the async 'error' event, so convert.

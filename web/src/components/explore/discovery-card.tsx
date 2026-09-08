@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { ExternalLink, Plus, Check, Loader2, ShieldQuestion, Sparkles, Coins } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { instrumentSerif } from "@/lib/fonts";
-import { ATS_LABEL, type AtsSource, type DiscoveredOffer } from "@/lib/explore";
+import { SOURCE_LABEL, type DiscoveredOffer } from "@/lib/explore";
 import { useJobs } from "@/components/jobs/job-store";
 import { useExplore } from "./explore-provider";
 
@@ -77,8 +77,8 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
           href={offer.url}
           target="_blank"
           rel="noopener noreferrer"
-          title="Open the posting"
-          aria-label="Open the posting"
+          title={offer.ats === "boss" ? "在浏览器打开（需登录 BOSS直聘 查看完整详情）" : "Open the posting"}
+          aria-label={offer.ats === "boss" ? "在浏览器打开（需登录 BOSS直聘 查看完整详情）" : "Open the posting"}
           className="-m-1 inline-flex shrink-0 items-center justify-center rounded p-1 text-faint transition-colors hover:text-foreground max-sm:min-h-[44px] max-sm:min-w-[44px]"
         >
           <ExternalLink className="size-4" />
@@ -86,7 +86,10 @@ export function DiscoveryCard({ offer, inPipeline, evaluatedN }: { offer: Discov
       </div>
 
       <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-        <span className="rounded border border-border px-1.5 py-0.5 font-medium text-muted">{ATS_LABEL[offer.ats as AtsSource] ?? offer.ats}</span>
+        <span className="rounded border border-border px-1.5 py-0.5 font-medium text-muted">{SOURCE_LABEL[offer.ats] ?? offer.ats}</span>
+        {offer.ats === "boss" && (
+          <span className="text-faint" title="BOSS 详情页匿名仅显示标题/公司/地点，完整职位描述需登录后查看">· 详情需登录</span>
+        )}
         {fresh && <span className="text-faint">{fresh}</span>}
         {unverified && (
           <span

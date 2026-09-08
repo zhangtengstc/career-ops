@@ -28,7 +28,7 @@ Usage:
       # NDJSON: {keyword, rawJobs:[...], errors:[...], done, total} per keyword,
       # then {done:true, source:"boss", total}
 """
-import argparse, asyncio, json, os, pathlib, sys, time
+import argparse, asyncio, json, os, pathlib, subprocess, sys, time, urllib.request
 import nodriver as uc
 from nodriver.cdp import browser as cdp_browser
 
@@ -53,6 +53,66 @@ def find_chrome():
         if pathlib.Path(p).exists():
             return p
     return None
+
+# ── single browser lifecycle (the shared :9222 debug Chrome) ──────────────
+# Every boss flow — parse-link, scan, login handoff — attaches to ONE Chrome
+# instance on a fixed debug port, reusing the boss-profile dir. Nodriver's
+# `uc.start(user_data_dir=…)` would otherwise spawn a SECOND Chrome on the
+# same profile; two Chromes cannot share a profile dir (singleton lock), so
+# parse-link's :9222 instance and a scan's fresh instance collided. Launching
+# goes through spawn_debug_chrome() here (idempotent — attaches when :9222 is
+# already up), mirroring web/src/lib/boss-chrome.ts's getChromeCdpUrl().
+DEBUG_PORT = 9222
+LANDING_URL = f"{BASE_URL}?query=%E6%95%B0%E6%8D%AE%E5%88%86%E6%9E%90&city={DEFAULT_CITY}"
+
+
+def chrome_cdp_ready():
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json/version", timeout=1.0) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def spawn_debug_chrome():
+    chrome = find_chrome()
+    if not chrome:
+        return False
+    args = [
+        chrome,
+        f"--remote-debugging-port={DEBUG_PORT}",
+        f"--user-data-dir={PROFILE}",
+        "--start-maximized",
+        LANDING_URL,
+    ]
+    try:
+        subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+    except Exception:
+        return False
+    for _ in range(40):  # up to ~20s for the DevTools port to come up
+        if chrome_cdp_ready():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+async def ensure_browser():
+    """Attach to the shared :9222 debug Chrome, launching it first if needed.
+    Returns the nodriver Browser, or None when Chrome is unavailable."""
+    if not chrome_cdp_ready():
+        if not spawn_debug_chrome():
+            return None
+    try:
+        return await uc.start(host="127.0.0.1", port=DEBUG_PORT)
+    except Exception:
+        return None
 
 def write_marker():
     """Touch config/browser-state/boss.json so the web Explorer's fail-fast
@@ -170,10 +230,12 @@ async def scan_keyword(tab, kw, max_pages):
         return jobs, f"{type(e).__name__}: {e}"
 
 async def login_handoff():
-    chrome = find_chrome() or "chrome"
-    browser = await uc.start(user_data_dir=str(PROFILE), headless=False, lang="zh-CN", browser_executable_path=chrome)
+    browser = await ensure_browser()
+    if browser is None:
+        print("BROWSER_FAILED: 无法启动 BOSS 调试浏览器（未找到 Chrome 或启动失败）", flush=True)
+        return
     try:
-        tab = await browser.get("https://www.zhipin.com/web/geek/job?query=%E6%95%B0%E6%8D%AE%E5%88%86%E6%9E%90&city=101020100")
+        tab = await browser.get(LANDING_URL)
         print("[boss] 请在弹出的 Chrome 窗口完成 BOSS直聘 登录；登录成功跳回职位页后自动保存。", flush=True)
         deadline = time.time() + 12 * 60
         while time.time() < deadline:
@@ -187,17 +249,22 @@ async def login_handoff():
             print("LOGIN_TIMEOUT", flush=True)
     finally:
         try:
-            await browser.send(cdp_browser.close()); await asyncio.sleep(3)
+            await browser.stop()
         except Exception:
             pass
-        await browser.aclose()
+        try:
+            await browser.aclose()
+        except Exception:
+            pass
 
 async def run_scan(keywords, max_pages):
-    chrome = find_chrome() or "chrome"
-    browser = await uc.start(user_data_dir=str(PROFILE), headless=False, lang="zh-CN", browser_executable_path=chrome)
+    browser = await ensure_browser()
+    if browser is None:
+        print(json.dumps({"done": True, "source": "boss", "total": 0, "errors": ["browser unavailable — Chrome not found or failed to start"]}, ensure_ascii=True), flush=True)
+        return
     total = 0
     try:
-        tab = await browser.get("about:blank")
+        tab = await browser.get("about:blank", new_tab=True)
         for i, kw in enumerate(keywords):
             url = val(await tab.evaluate("location.href", return_by_value=True)) or ""
             if not logged_in(url):
@@ -215,10 +282,84 @@ async def run_scan(keywords, max_pages):
         print(json.dumps({"done": True, "source": "boss", "total": total}), flush=True)
     finally:
         try:
-            await browser.send(cdp_browser.close()); await asyncio.sleep(3)
+            await browser.stop()
         except Exception:
             pass
-        await browser.aclose()
+        try:
+            await browser.aclose()
+        except Exception:
+            pass
+
+async def parse_link(url):
+    """Attach to the shared :9222 debug Chrome (launching it if needed) and
+    evaluate the BOSS job_detail page in a throwaway tab. Returns a structured
+    browserNotRunning only when the browser can't be started at all.
+
+    Contract: this function ALWAYS prints exactly one JSON line —
+    {documentTitle,metaDesc,locationEl} | {loginRequired:true} |
+    {browserNotRunning:true} | {error:msg}. The web route keys off these."""
+    browser = await ensure_browser()
+    if browser is None:
+        print(json.dumps({"browserNotRunning": True, "error": "Chrome 未在 :9222 运行且自动启动失败"}, ensure_ascii=True), flush=True)
+        return
+    tab = None
+    try:
+        # new_tab=True is mandatory in attach mode: bare browser.get() REUSES
+        # the browser's first tab, and tab.close() below would then close the
+        # user's own tab — closing their last tab kills the whole shared
+        # Chrome (observed: browser gone after one parse).
+        tab = await browser.get(url, new_tab=True)
+        await tab.sleep(10)
+        js = r"""
+        (function(){
+          var desc = (document.querySelector('meta[name=description]') || {}).content || '';
+          var el = document.querySelector('.company-location');
+          return JSON.stringify({
+            documentTitle: document.title || '',
+            metaDesc: desc,
+            locationEl: el ? el.textContent.trim() : ''
+          });
+        })()
+        """
+        raw = val(await tab.evaluate(js, return_by_value=True)) or "{}"
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {"title": "", "company": "", "location": "", "error": "parse failed"}
+        login_js = r"""
+        (function(){
+          // Match the PATH, not the full href: job_detail links legitimately
+          // carry ?securityId=… in the query, and matching 'security' against
+          // the whole URL false-positives every shared link as a login wall
+          // even when the detail page rendered fine (observed 2026-09-08).
+          var p = (location.pathname || '').toLowerCase();
+          var t = (document.title || '').toLowerCase();
+          var wall = /login|security|passport|register|verify|captcha/.test(p) || /登录|注册/.test(t);
+          var body = (document.body && document.body.innerText) ? document.body.innerText.slice(0,120) : '';
+          if (!wall) wall = /登录|注册/.test(body) && !/(数据分析|产品|工程师|助理|专员|经理|主管|运营|市场|销售|财务|人力|行政|设计|开发|java|python|前端|后端|算法|数据)/.test(body);
+          return JSON.stringify({ loginRequired: !!wall, url: location.href, title: document.title || '' });
+        })()
+        """
+        login_raw = val(await tab.evaluate(login_js, return_by_value=True)) or "{}"
+        try:
+            login_info = json.loads(login_raw)
+        except Exception:
+            login_info = {}
+        if login_info.get("loginRequired"):
+            print(json.dumps({"loginRequired": True, "url": login_info.get("url", ""), "title": login_info.get("title", "")}, ensure_ascii=True), flush=True)
+        else:
+            print(json.dumps(data, ensure_ascii=True), flush=True)
+    except Exception as e:
+        # browser.get/evaluate failures (dead target, navigation abort, …) must
+        # still surface as structured JSON — a bare traceback leaves stdout
+        # empty and the web route can only show a misleading generic error.
+        print(json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=True), flush=True)
+    finally:
+        if tab is not None:
+            try:
+                await tab.close()
+            except Exception:
+                pass
 
 def main():
     ap = argparse.ArgumentParser()
@@ -226,10 +367,19 @@ def main():
     ap.add_argument("--jsonl", action="store_true")
     ap.add_argument("--keywords", default="")
     ap.add_argument("--max-pages", type=int, default=5)
+    ap.add_argument("--parse-link", default="")
     args = ap.parse_args()
 
     if args.login:
         asyncio.run(login_handoff())
+        return
+    if args.parse_link:
+        # Last-resort guard: stdout must always carry exactly one JSON line,
+        # even if the event loop itself blows up (RuntimeError at teardown…).
+        try:
+            asyncio.run(parse_link(args.parse_link))
+        except Exception as e:
+            print(json.dumps({"error": f"parse-link crashed: {type(e).__name__}: {e}"}, ensure_ascii=True), flush=True)
         return
 
     kws = [k.strip() for k in args.keywords.split(",") if k.strip()] if args.keywords else ["数据分析", "BI", "用户运营"]

@@ -79,6 +79,18 @@ type ExploreCtx = {
   discoverAI: () => Promise<void>;
   aiTrace: AiTraceChunk[];
   aiCost: AiCost;
+  // ── paste-link parse (第三入口, explore/paste-link-parse) ──
+  linkedOffers: DiscoveredOffer[];
+  parsing: boolean;
+  linkError: string;
+  bossLoginRequired: boolean;
+  bossLoginBusy: boolean;
+  bossBrowserNotRunning: boolean;
+  bossAwaitingLogin: boolean;
+  loginBossForParse: () => Promise<void>;
+  launchBossBrowser: () => Promise<void>;
+  retryBossParse: () => Promise<void>;
+  parseLink: (url: string) => Promise<{ ok: boolean; duplicate?: boolean; loginRequired?: boolean; browserNotRunning?: boolean }>;
 };
 
 const Ctx = createContext<ExploreCtx | null>(null);
@@ -137,6 +149,14 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
   const [aiIntent, setAiIntent] = useState("");
   const [aiTrace, setAiTrace] = useState<AiTraceChunk[]>([]);
   const [aiCost, setAiCost] = useState<AiCost>({ searches: 0, candidates: 0, fetches: 0 });
+  const [linkedOffers, setLinkedOffers] = useState<DiscoveredOffer[]>([]);
+  const [linkParsing, setLinkParsing] = useState(false);
+  const [linkError, setLinkError] = useState("");
+  const linkParsingRef = useRef(false);
+  const offersRef = useRef(offers);
+  offersRef.current = offers;
+  const linkedOffersRef = useRef(linkedOffers);
+  linkedOffersRef.current = linkedOffers;
   const runningRef = useRef(false);
   const aiIntentRef = useRef(aiIntent);
   aiIntentRef.current = aiIntent;
@@ -402,12 +422,159 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
     setScannerMissing(false);
     setAiTrace([]);
     setAiCost({ searches: 0, candidates: 0, fetches: 0 });
+    setLinkedOffers([]);
+    setLinkError("");
+    setBossLoginRequired(false);
+    setBossLoginBusy(false);
+    setBossBrowserNotRunning(false);
+    setBossAwaitingLogin(false);
+    lastBossUrlRef.current = null;
     try {
       sessionStorage.removeItem(RESULTS_KEY);
     } catch {
       /* ignore */
     }
   }, []);
+
+  const [bossLoginRequired, setBossLoginRequired] = useState(false);
+  const [bossLoginBusy, setBossLoginBusy] = useState(false);
+  const [bossBrowserNotRunning, setBossBrowserNotRunning] = useState(false);
+  const [bossAwaitingLogin, setBossAwaitingLogin] = useState(false);
+  const lastBossUrlRef = useRef<string | null>(null);
+  const parseLink = useCallback(async (url: string): Promise<{ ok: boolean; duplicate?: boolean; loginRequired?: boolean; browserNotRunning?: boolean }> => {
+    if (linkParsingRef.current) return { ok: false };
+    const u = url.trim();
+    if (!u) return { ok: false };
+    linkParsingRef.current = true;
+    setLinkParsing(true);
+    setLinkError("");
+    try {
+      const r = await fetch("/api/explore/parse-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: u }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { offer?: DiscoveredOffer; error?: string; loginRequired?: boolean; browserNotRunning?: boolean };
+      if (d.loginRequired) {
+        lastBossUrlRef.current = u;
+        setBossLoginRequired(true);
+        setBossBrowserNotRunning(false);
+        return { ok: false, loginRequired: true };
+      }
+      if (d.browserNotRunning) {
+        lastBossUrlRef.current = u;
+        setBossBrowserNotRunning(true);
+        setBossLoginRequired(false);
+        setBossAwaitingLogin(false);
+        return { ok: false, browserNotRunning: true };
+      }
+      if (!r.ok || !d.offer) {
+        setLinkError(typeof d.error === "string" && d.error ? d.error : `解析失败（${r.status}）`);
+        setBossBrowserNotRunning(false);
+        return { ok: false };
+      }
+      const offer = d.offer;
+      const known = new Set([...offersRef.current.map((o) => o.url), ...linkedOffersRef.current.map((o) => o.url)]);
+      if (known.has(offer.url)) return { ok: false, duplicate: true };
+      linkedOffersRef.current = [offer, ...linkedOffersRef.current];
+      setLinkedOffers(linkedOffersRef.current);
+      setBossLoginRequired(false);
+      setBossBrowserNotRunning(false);
+      setBossAwaitingLogin(false);
+      return { ok: true };
+    } catch (e) {
+      setLinkError(e instanceof Error ? e.message : "解析失败");
+      return { ok: false };
+    } finally {
+      linkParsingRef.current = false;
+      setLinkParsing(false);
+    }
+  }, []);
+
+  // boss login handoff for paste-link parse — triggered by explicit user tap
+  // on the PasteLinkBar "打开 BOSS 浏览器登录" button. Opens/focuses the shared
+  // debug browser on a BOSS page, then WAITS FOR THE USER: a fixed-delay
+  // auto-retry can never outrun a human login (QR scan etc.), so the retry is
+  // a separate explicit action (retryBossParse) once the user confirms.
+  const loginBossForParse = useCallback(async () => {
+    if (bossLoginBusy) return;
+    if (!lastBossUrlRef.current) return;
+    setBossLoginBusy(true);
+    setLinkError("");
+    setLinkParsing(true);
+    try {
+      const r = await fetch("/api/explore/login-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "boss", action: "login" }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!r.ok || !d.ok) {
+        setLinkError(typeof d.error === "string" && d.error ? d.error : "BOSS 浏览器启动失败");
+        return;
+      }
+      setBossLoginRequired(false);
+      setBossBrowserNotRunning(false);
+      setBossAwaitingLogin(true);
+    } catch (e) {
+      setLinkError(e instanceof Error ? e.message : "BOSS 登录流程异常");
+    } finally {
+      setBossLoginBusy(false);
+      setLinkParsing(false);
+    }
+  }, [bossLoginBusy]);
+
+  // User has finished logging in inside the BOSS browser — retry the pending
+  // paste-link URL explicitly (no fixed-delay auto-retry; humans are slow).
+  const retryBossParse = useCallback(async () => {
+    const target = lastBossUrlRef.current;
+    if (!target) return;
+    const res = await parseLink(target);
+    if (res.ok) {
+      setBossAwaitingLogin(false);
+      setBossLoginRequired(false);
+      setBossBrowserNotRunning(false);
+      setLinkError("");
+    } else if (res.loginRequired) {
+      // Stay in the awaiting state so the retry button remains visible.
+      setLinkError("仍未检测到登录态——请在 BOSS 浏览器中确认已登录后再重试");
+    } else if (res.browserNotRunning) {
+      setBossAwaitingLogin(false);
+    }
+    // other failures: parseLink already surfaced linkError
+  }, [parseLink]);
+
+  const launchBossBrowser = useCallback(async () => {
+    if (bossLoginBusy) return;
+    const target = lastBossUrlRef.current;
+    setBossLoginBusy(true);
+    setLinkError("");
+    setLinkParsing(true);
+    try {
+      const r = await fetch("/api/explore/login-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "boss", action: "open" }),
+      });
+      const d = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!r.ok || !d.ok) {
+        setLinkError(typeof d.error === "string" && d.error ? d.error : "BOSS 浏览器启动失败");
+        return;
+      }
+      if (target) {
+        // Browser start needs no human action, so an immediate retry is safe;
+        // parseLink itself flips the state flags (login wall / success).
+        await parseLink(target);
+      } else {
+        setBossBrowserNotRunning(false);
+      }
+    } catch (e) {
+      setLinkError(e instanceof Error ? e.message : "BOSS 浏览器启动异常");
+    } finally {
+      setBossLoginBusy(false);
+      setLinkParsing(false);
+    }
+  }, [bossLoginBusy, parseLink]);
 
   // AI search — orchestrate modes/discover.md via the user's CLI, streamed.
   const discoverAI = useCallback(async () => {
@@ -584,8 +751,9 @@ export function ExploreProvider({ children }: { children: React.ReactNode }) {
       offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding,
       discover, loadFresh, addToPipeline, applyPatch, reset,
       mode, setMode, aiIntent, setAiIntent, discoverAI, aiTrace, aiCost,
+      linkedOffers, parsing: linkParsing, linkError, bossLoginRequired, bossLoginBusy, bossBrowserNotRunning, bossAwaitingLogin, loginBossForParse, launchBossBrowser, retryBossParse, parseLink,
     }),
-    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, aiTrace, aiCost],
+    [filters, setFilters, initFilters, phase, offers, sources, matchCount, companiesScanned, companiesAvailable, capHit, droppedNoDate, status, partial, error, scannerMissing, added, adding, discover, loadFresh, addToPipeline, applyPatch, reset, mode, setMode, aiIntent, discoverAI, aiTrace, aiCost, linkedOffers, linkParsing, linkError, bossLoginRequired, bossLoginBusy, bossBrowserNotRunning, bossAwaitingLogin, loginBossForParse, launchBossBrowser, retryBossParse, parseLink],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -169,3 +169,13 @@ documents/*
 # Intake fingerprints — the recorded source filenames may themselves carry
 # PII (e.g. cv/jane-doe-master-cv.pdf). #1723
 data/intake-state.json
+
+__pycache__/
+
+# planning-with-files working notes (transient; may reference paste-in job
+# URLs with securityId share tokens) — internal only, never committed.
+.planning/
+
+# batch/ generated artifacts (job-detail snapshots, ad-hoc probe scripts).
+batch/_jd.json
+batch/_tmp_*

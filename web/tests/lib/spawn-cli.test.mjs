@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnHeadlessCli, unwrapNpmShim } from "../../src/lib/spawn-cli.mjs";
+import { spawnHeadlessCli, unwrapNpmShim, unwrapExeShim } from "../../src/lib/spawn-cli.mjs";
 
 // Fixture: a fake npm global dir with the .cmd + extensionless sh shim pair npm
 // generates, and the node_modules entry js they wrap.
@@ -67,6 +67,40 @@ test("spawnHeadlessCli runs an unwrapped npm shim with clean argv", { skip: proc
   assert.equal(code, 0);
   // argv survives verbatim (space in "a b" intact) — no cmd.exe quoting layer.
   assert.equal(stdout.trim(), "cli-js-ok a b|c");
+});
+
+test("unwrapExeShim unwraps a .cmd that wraps a real exe (pip/uv-style launcher)", () => {
+  const dir = makeShimDir();
+  const shim = path.join(dir, "exe-wrap.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"${path.join(dir, "real.exe")}" %*\r\n`);
+  assert.equal(unwrapExeShim(shim, "win32"), path.join(dir, "real.exe"));
+});
+
+test("unwrapExeShim rejects real binaries, extensionless shims, missing targets, non-win32", () => {
+  const dir = makeShimDir();
+  const shim = path.join(dir, "exe-wrap.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"${path.join(dir, "real.exe")}" %*\r\n`);
+  assert.equal(unwrapExeShim(path.join(dir, "real.exe"), "win32"), null); // real binary passes through
+  assert.equal(unwrapExeShim(path.join(dir, "fake"), "win32"), null); // extensionless sh shim
+  assert.equal(unwrapExeShim(shim, "linux"), null);
+  const orphan = path.join(dir, "orphan-exe.cmd");
+  fs.writeFileSync(orphan, `@echo off\r\n"C:\\nope\\gone.exe" %*\r\n`);
+  assert.equal(unwrapExeShim(orphan, "win32"), null); // referenced exe must exist
+});
+
+test("spawnHeadlessCli runs a .cmd that wraps a real exe", { skip: process.platform !== "win32" }, async () => {
+  const dir = makeShimDir();
+  const shim = path.join(dir, "nodewrap.cmd");
+  fs.writeFileSync(shim, `@echo off\r\n"${process.execPath}" %*\r\n`);
+  const child = spawnHeadlessCli(shim, ["-e", 'process.stdout.write("EXE-OK")'], { cwd: dir });
+  let stdout = "";
+  child.stdout.on("data", (c) => { stdout += c; });
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(code, 0);
+  assert.equal(stdout, "EXE-OK");
 });
 
 test("spawnHeadlessCli converts a synchronous spawn throw into the async contract", async () => {

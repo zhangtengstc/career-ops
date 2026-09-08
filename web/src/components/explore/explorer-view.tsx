@@ -1,19 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Compass, ChevronDown, RotateCcw, AlertTriangle, Sparkles, Settings } from "lucide-react";
+import { Compass, ChevronDown, RotateCcw, AlertTriangle, Sparkles, Settings, Link2 } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { instrumentSerif } from "@/lib/fonts";
 import type { Application, InboxJob } from "@/lib/career-ops";
 import { normalizeTextKey } from "@/lib/core/normalize-text-key.mjs";
-import { paramsToFilters, paramsToAi, type ExploreFilters } from "@/lib/explore";
+import { paramsToFilters, paramsToAi, type ExploreFilters, type DiscoveredOffer } from "@/lib/explore";
 import { FilterBuilder } from "./filter-builder";
 import { DiscoveringState, StreamingHeader } from "./discovering-state";
 import { AiHuntView } from "./ai-hunt-view";
 import { ExploreModeToggle } from "./explore-mode-toggle";
 import { AiSearchBox } from "./ai-search-box";
 import { ResultsList, type EnrichedOffer } from "./results-list";
+import { DiscoveryCard } from "./discovery-card";
+import { PasteLinkBar } from "./paste-link-bar";
 import { useExplore } from "./explore-provider";
 
 // Same shape as core normalizeTextKey(s, " ") — never [^a-z0-9] (#2666).
@@ -40,7 +42,7 @@ export function ExplorerView({
   appsSnapshot: Application[];
   rootExists: boolean;
 }) {
-  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, scannerMissing, mode, setMode, aiIntent, setAiIntent, discoverAI, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial } = useExplore();
+  const { filters, setFilters, initFilters, phase, running, offers, discover, loadFresh, status, error, scannerMissing, mode, setMode, aiIntent, setAiIntent, discoverAI, companiesScanned, companiesAvailable, capHit, droppedNoDate, partial, linkedOffers } = useExplore();
   const scanNote =
     companiesScanned > 0
       ? `Scanned ${companiesScanned.toLocaleString()}${companiesAvailable > companiesScanned ? ` of ${companiesAvailable.toLocaleString()}` : ""} compan${companiesScanned === 1 ? "y" : "ies"}${partial ? " · some sources were unreachable" : ""}.`
@@ -90,21 +92,21 @@ export function ExplorerView({
   }, [seed.filters, initFilters, setMode, setAiIntent, discover, loadFresh]);
 
   const inboxUrls = useMemo(() => new Set(inboxSnapshot.map((j) => j.url)), [inboxSnapshot]);
-  const enriched: EnrichedOffer[] = useMemo(
-    () =>
-      offers.map((o) => {
-        const inPipeline = inboxUrls.has(o.url);
-        const c = norm(o.company);
-        const t = norm(o.title);
-        const ev = appsSnapshot.find((a) => {
-          if (norm(a.company) !== c) return false;
-          const ar = norm(a.role);
-          return ar.length > 3 && (t.includes(ar) || ar.includes(t.split(" ").slice(0, 3).join(" ")));
-        });
-        return { ...o, inPipeline, evaluatedN: ev?.n };
-      }),
-    [offers, inboxUrls, appsSnapshot],
-  );
+  const enrich = (o: DiscoveredOffer): EnrichedOffer => {
+    const inPipeline = inboxUrls.has(o.url);
+    const c = norm(o.company);
+    const t = norm(o.title);
+    const ev = appsSnapshot.find((a) => {
+      if (norm(a.company) !== c) return false;
+      const ar = norm(a.role);
+      return ar.length > 3 && (t.includes(ar) || ar.includes(t.split(" ").slice(0, 3).join(" ")));
+    });
+    return { ...o, inPipeline, evaluatedN: ev?.n };
+  };
+  const enriched: EnrichedOffer[] = useMemo(() => offers.map(enrich), [offers, inboxUrls, appsSnapshot]);
+  // Paste-link results are a SEPARATE list (not a scan — must not pollute the
+  // "Scanned N companies" count), rendered above the scan results.
+  const linkedEnriched: EnrichedOffer[] = useMemo(() => linkedOffers.map(enrich), [linkedOffers, inboxUrls, appsSnapshot]);
 
   const isAi = mode === "ai";
   if (running) {
@@ -181,6 +183,8 @@ export function ExplorerView({
         )
       ) : (
         <>
+          <PasteLinkBar />
+
           {isResults ? (
             <div className="mb-6 rounded-xl border border-border bg-surface/30">
               <button type="button" onClick={() => setRefineOpen((v) => !v)} className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-foreground">
@@ -199,6 +203,20 @@ export function ExplorerView({
               <FilterBuilder filters={filters} onChange={setFilters} seededFrom={seed.seededFrom} />
               <div className="mt-5">
                 <DiscoverBar canDiscover={canDiscover} onDiscover={discover} label="Discover (free)" />
+              </div>
+            </div>
+          )}
+
+          {linkedEnriched.length > 0 && (
+            <div className="mb-6">
+              <div className="mb-2 flex items-center gap-2">
+                <Link2 className="size-3.5 text-faint" />
+                <p className="text-[12px] font-medium uppercase tracking-wide text-faint">链接解析</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {linkedEnriched.map((o) => (
+                  <DiscoveryCard key={o.url} offer={o} inPipeline={o.inPipeline} evaluatedN={o.evaluatedN} />
+                ))}
               </div>
             </div>
           )}

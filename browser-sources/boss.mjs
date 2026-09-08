@@ -28,6 +28,7 @@ import {
 } from '../scan.mjs';
 import { buildTitleFilter } from '../lib/browser-source.mjs';
 import { localToday } from '../lib/local-today.mjs';
+import { resolvePythonExecutable } from '../web/src/lib/python-env.mjs';
 
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PORTALS_PATH = path.join(ROOT, 'portals.yml');
@@ -129,7 +130,15 @@ function loadPortals() {
  */
 function spawnSidecar(args, onLine) {
   return new Promise((resolve) => {
-    const child = spawn('python', [BOSS_PY, ...args], {
+    // Resolve the interpreter explicitly (D-006): an Explorer/cmd-started
+    // parent can have a PATH whose `python` lacks nodriver (e.g. the
+    // agent-reach venv), killing boss.py on import with no stdout.
+    const pythonExe = resolvePythonExecutable({ requireModule: 'nodriver' });
+    if (!pythonExe) {
+      resolve({ code: 1, stderr: 'no python with nodriver found — set CAREER_OPS_PYTHON to the boss.py interpreter' });
+      return;
+    }
+    const child = spawn(pythonExe, [BOSS_PY, ...args], {
       cwd: ROOT,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       stdio: ['ignore', 'pipe', 'pipe'],
