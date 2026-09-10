@@ -493,7 +493,8 @@ test("evaluate's kill budget gives real headroom, not the old 285s floor (#3124)
   const ms = killMsForKind("evaluate");
   assert.ok(ms > 285_000, `evaluate must exceed the 285s that killed real runs, got ${ms}ms`);
   assert.ok(ms < RUN_MAX_DURATION_S * 1000, "must stay under maxDuration so the SIGTERM is graceful, not a hard cutoff");
-  assert.equal(killMsForKind("pdf"), 600_000, "pdf keeps its post-agent render headroom");
+  assert.equal(killMsForKind("pdf"), 1_200_000, "pdf content generation gets twenty minutes");
+  assert.ok(RUN_MAX_DURATION_S * 1000 - killMsForKind("pdf") >= 200_000, "pdf keeps at least 200s of post-agent render headroom");
   assert.equal(killMsForKind("fix-portal"), killMsForKind("evaluate"), "non-pdf kinds share the evaluate budget");
 });
 

@@ -18,7 +18,7 @@ import { acquireTrackerWrite, releaseTrackerWrite } from "@/lib/core/run-registr
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 800; // a real oferta evaluation / pdf-mode CV tailoring + render is heavy and multi-step
+export const maxDuration = 1400; // 1200s PDF content + 200s render/mark headroom; keep aligned with RUN_MAX_DURATION_S
 
 export async function POST(req: Request) {
   let body: { kind?: string; input?: string; cliId?: string };
@@ -111,7 +111,8 @@ export async function POST(req: Request) {
     kind === "evaluate"
       ? readInbox().find((j) => j.url === input)?.postedAt ?? readScanDates().get(input)
       : undefined;
-  const prompt = buildPrompt({ kind, input, memory: readMemory(), today, postedAt, lang });
+  const pdfReportFile = kind === "pdf" ? findReportFile(input) : undefined;
+  const prompt = buildPrompt({ kind, input, memory: readMemory(), today, postedAt, lang, pdfReportFile });
 
   const isClaude = cliId === "claude";
   // Which tools each kind gets, and the whole claude argv, live in
@@ -216,22 +217,9 @@ export async function POST(req: Request) {
       };
       let lastTokens = 0; // per-run token cost from the CLI's structured usage event (#6) — local only
       let lastCostUsd: number | null = null;
-      // pdf-mode's agent only tailors content now (rendering moved to the
-      // backend, #2172) — but its killMs still has to leave real headroom
-      // inside the route's overall maxDuration (800s): the render+mark phase
-      // (renderPdf, below) starts only after this timer's window and has no
-      // timeout of its own, so an agent that runs close to its full budget
-      // would otherwise leave the platform's hard maxDuration cutoff to kill
-      // generate-pdf.mjs mid-render. 600s agent / ~200s render is ample —
-      // a Chromium PDF render normally takes low tens of seconds even with a
-      // cold Playwright launch.
-      // pdf keeps 600s because its render+mark phase runs AFTER this timer; a
-      // plain evaluate has no such phase, so it can use almost the whole 800s
-      // budget. 285s was cutting real evaluations off mid-run — reading the mode
-      // and profile, fetching the posting, ~25 Bash calls and a few web searches
-      // routinely run past it — and the SIGTERM then surfaced as "didn't save a
-      // report" (see the close handler), blaming the CLI for a limit we imposed
-      // (#3124). 780s leaves ~20s under maxDuration for a graceful shutdown.
+      // PDF content has a 1200s budget; the route reserves another 200s for
+      // backend render+mark. Other kinds retain their existing 780s budget.
+      // The render phase does not yet enforce its own deadline.
       const killMs = killMsForKind(kind);
       // Set by the killer so the close handler can tell "we timed it out" apart
       // from "the CLI exited on its own" — different failures, different message.

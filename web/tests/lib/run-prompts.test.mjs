@@ -71,6 +71,22 @@ test("buildPrompt: the pdf prompt still pins tailoring to the real mode", () => 
   assert.match(prompt, /reports\/018-\*\.md/);
 });
 
+test("buildPrompt: pdf uses the resolved report path instead of a raw numeric glob", () => {
+  const reportFile = "D:/work/reports/005-yunjian-yecai-2026-09-08.md";
+  const prompt = buildPrompt({ kind: "pdf", ...ARGS, input: "5", pdfReportFile: reportFile });
+  assert.ok(prompt.includes(JSON.stringify(reportFile)));
+  assert.doesNotMatch(prompt, /reports\/5-\*\.md/);
+  assert.match(prompt, /Read these exact files directly/i);
+});
+
+test("buildPrompt: pdf bounds template discovery and states the output language", () => {
+  const prompt = buildPrompt({ kind: "pdf", ...ARGS, lang: { output: "zh", modesDir: "modes/zh", evalModeFile: "modes/zh/oferta.md" } });
+  assert.match(prompt, /templates\/sections/);
+  assert.match(prompt, /Do not recursively scan the repository/i);
+  assert.match(prompt, /Do not read implementation scripts/i);
+  assert.match(prompt, /Write all human-facing output in "zh"/);
+});
+
 test("buildPrompt: every kind ends with exactly one VERDICT instruction", () => {
   // Given each kind — job-store.tsx parses that final line client-side
   for (const kind of ["pdf", "research", "evaluate", "fix-portal"]) {

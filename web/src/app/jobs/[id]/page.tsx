@@ -37,12 +37,14 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
         {job.status === "running" && <HeroGlow />}
         <div className="relative z-10">
           <p className="flex items-center gap-2 font-mono text-xs uppercase tracking-[0.18em] text-faint">
+            {/* Keep text in a host element: browser translation can replace bare
+                Text nodes, invalidating React's anchor when the icon changes. */}
             {job.status === "running" ? (
-              <><Loader2 className="size-3 animate-spin text-brand" /> working</>
+              <><Loader2 className="size-3 animate-spin text-brand" /><span>working</span></>
             ) : job.status === "done" ? (
-              <><Check className="size-3 text-emerald-500" /> done</>
+              <><Check className="size-3 text-emerald-500" /><span>done</span></>
             ) : (
-              <><X className="size-3 text-red-400" /> error</>
+              <><X className="size-3 text-red-400" /><span>error</span></>
             )}
           </p>
           <h1 className="mt-2 font-display text-2xl tracking-tight text-landing">{job.title}</h1>
